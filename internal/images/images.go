@@ -11,12 +11,17 @@ type Record struct {
 	// CreatedAt is the created time stamp
 	CreatedAt *time.Time `json:"createdAt"`
 
-	//  TODO: not needed unless we're checking the checksum of local files,
-	//   prob wont for this
-	//ETag string `json:"etag"`
+	// Etag of the object
+	ETag string `json:"etag"`
 
 	// Key of the object in cloud storage
 	Key string `json:"key"`
+
+	// Name of the object given during an upload. This must be unique.
+	Name string `json:"name"`
+
+	// Size is the size of the object in KB
+	Size int64 `json:"size"`
 
 	// Storage is the cloud storage that holds the underlying images
 	// i.e. an AWS bucket
@@ -26,6 +31,8 @@ type Record struct {
 // Reader interface provides the means to read image records from the underlying
 // database.
 type Reader interface {
+	// Get provides the means to retrieve an image record by id.
+	Get(id string) (*Record, error)
 	// List provides the means to list image records from the db.
 	List() ([]Record, error)
 }

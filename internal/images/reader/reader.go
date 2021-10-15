@@ -86,6 +86,13 @@ func (s *Service) validate() error {
 	return nil
 }
 
+// Get returns an image record given the id. Returns ErrRecordNotFound if no
+// image is found by that ID.
+func (s *Service) Get(id string) (*images.Record, error) {
+	// TODO:
+	return nil, nil
+}
+
 // List lists all the image records in the db. This performs a scan
 // operation which can be slow with many items in the db.
 func (s *Service) List() ([]images.Record, error) {
