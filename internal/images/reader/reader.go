@@ -89,15 +89,37 @@ func (s *Service) validate() error {
 // Get returns an image record given the id. Returns ErrRecordNotFound if no
 // image is found by that ID.
 func (s *Service) Get(id string) (*images.Record, error) {
-	// TODO:
-	return nil, nil
+	logger := s.logger.With(zap.String("imageId", id))
+
+	input := dynamodb.GetItemInput{
+		Key: map[string]*dynamodb.AttributeValue{
+			"id": {
+				S: aws.String(id),
+			},
+		},
+		TableName: &s.name,
+	}
+
+	res, err := s.db.GetItem(&input)
+	if err != nil {
+		const msg = "unable to get item"
+		logger.Error(msg, zap.Error(err))
+		return nil, fmt.Errorf(msg+": %w", err)
+	}
+
+	var rec images.Record
+	if err := dynamodbattribute.UnmarshalMap(res.Item, &rec); err != nil {
+		const msg = "unable to unmarshal map into record"
+		logger.Error(msg, zap.Error(err))
+		return nil, fmt.Errorf(msg+": %w", err)
+	}
+
+	return &rec, nil
 }
 
 // List lists all the image records in the db. This performs a scan
 // operation which can be slow with many items in the db.
 func (s *Service) List() ([]images.Record, error) {
-	s.logger.Info("listing images")
-
 	input := dynamodb.ScanInput{
 		TableName: aws.String(s.name),
 	}

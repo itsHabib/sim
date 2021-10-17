@@ -1,6 +1,15 @@
 package images
 
-import "time"
+//go:generate go run github.com/golang/mock/mockgen -destination mocks/reader.go github.com/itsHabib/sim/internal/images Reader
+//go:generate go run github.com/golang/mock/mockgen -destination mocks/writer.go github.com/itsHabib/sim/internal/images Writer
+
+import (
+	"io"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+)
 
 // Record represents the image record stored in the db that links to an actual
 // image in cloud storage.
@@ -42,4 +51,36 @@ type Reader interface {
 type Writer interface {
 	// Create provides the means to create image records in the db.
 	Create(record *Record) error
+}
+
+// SessionGetter provides the caller a way retrieve an AWS session with
+// options they provide. Added to aid mocking in unit/integration tests
+type SessionGetter func() (*session.Session, error)
+
+// WithSessionOptions provides the way to configure the session with custom
+// aws config options
+func WithSessionOptions(opts ...*aws.Config) SessionGetter {
+	return func() (*session.Session, error) {
+		return session.NewSession(opts...)
+	}
+}
+
+// DownloadRequest represents the type used to request a download on an
+// io.Reader to cloud storage.
+type DownloadRequest struct {
+	// ID of the image.
+	ID string
+
+	// Stream represents the io writer that the object will be downloaded into
+	Stream io.WriterAt
+}
+
+// UploadRequest represents the type used to request an upload on an io.Reader
+// to cloud storage.
+type UploadRequest struct {
+	// Name of the file to upload
+	Name string
+
+	// Body of the data to upload
+	Body io.Reader
 }

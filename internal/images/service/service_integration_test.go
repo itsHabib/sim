@@ -4,16 +4,15 @@
 package service
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -24,8 +23,9 @@ import (
 )
 
 var (
-	localstack string
-	tableName  string
+	localstack   string
+	tableName    string
+	imageStorage string
 )
 
 func TestMain(m *testing.M) {
@@ -41,59 +41,58 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	imageStorage = os.Getenv("IMAGE_STORAGE")
+	if imageStorage == "" {
+		fmt.Printf("IMAGE_STORAGE env var must be set\n")
+		os.Exit(1)
+	}
+
 	os.Exit(m.Run())
 }
 
-// TODO: once the service has methods we can use those instead of testing
-//  the reader/writer directly
-func Test_Service_DB(t *testing.T) {
-	now := time.Now().UTC()
-	record := images.Record{
-		ID:        uuid.New().String(),
-		CreatedAt: &now,
-		Key:       "key",
-		Storage:   "storage",
-	}
-
+func Test_Service(t *testing.T) {
+	var id string
+	body := []byte("Hello, World!")
 	for _, tc := range []struct {
 		desc string
 		do   func(svc *Service, t *testing.T)
 		chk  func(svc *Service, t *testing.T)
 	}{
 		{
-			desc: "Create() should create the record with no errors",
+			desc: "Upload() should create the record and upload the object to cloud storage",
 			do: func(svc *Service, t *testing.T) {
-				require.NoError(t, svc.writer.Create(&record))
+				r := images.UploadRequest{
+					Name: "test",
+					Body: bytes.NewReader(body),
+				}
+				var err error
+				id, err = svc.Upload(r)
+				require.Nil(t, err)
+				require.NotEmpty(t, id)
 			},
 			chk: func(svc *Service, t *testing.T) {},
 		},
 		{
-			desc: "List() should list the expected records",
+			desc: "Download() should successfully download to the writer stream",
 			do:   func(svc *Service, t *testing.T) {},
 			chk: func(svc *Service, t *testing.T) {
-				records, err := svc.reader.List()
-				require.NoError(t, err)
-
-				require.NotEmpty(t, records)
-				// find record by id instead of assuming there's only one item
-				// we do this to avoid test failures when rerunning
-				var found bool
-				for i := range records {
-					if records[i].ID == record.ID {
-						assert.Equal(t, record, records[i])
-						found = true
-						break
-					}
+				buffer := aws.NewWriteAtBuffer([]byte{})
+				r := images.DownloadRequest{
+					ID:     id,
+					Stream: buffer,
 				}
-				assert.True(t, found, "unable to find record in table")
+				require.NoError(t, svc.Download(r))
+				assert.Equal(t, body, buffer.Bytes())
 			},
 		},
 	} {
-		t.Run(tc.desc, func(t *testing.T) {
+		if !t.Run(tc.desc, func(t *testing.T) {
 			svc := getService(t)
 			tc.do(svc, t)
 			tc.chk(svc, t)
-		})
+		}) {
+			return
+		}
 	}
 }
 
@@ -103,6 +102,7 @@ func getService(t *testing.T) *Service {
 		NewConfig().
 		WithEndpoint(localstack).
 		WithRegion(region).
+		WithS3ForcePathStyle(true).
 		WithCredentials(credentials.NewStaticCredentials("images", "secret", ""))
 	sess, err := session.NewSession(cfg)
 	require.NoError(t, err)
@@ -115,7 +115,7 @@ func getService(t *testing.T) *Service {
 	w, err := writer.NewService(nop, client, tableName)
 	require.NoError(t, err)
 
-	svc, err := NewService(zap.NewNop(), r, w)
+	svc, err := New(zap.NewNop(), imageStorage, r, w, images.WithSessionOptions(cfg))
 	require.NoError(t, err)
 
 	return svc

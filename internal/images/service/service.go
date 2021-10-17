@@ -2,13 +2,13 @@ package service
 
 import (
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -23,13 +23,15 @@ const (
 
 // Service provides the implementation for interacting with images.
 type Service struct {
-	logger  *zap.Logger
-	storage string
-	reader  images.Reader
-	writer  images.Writer
+	logger        *zap.Logger
+	reader        images.Reader
+	s3            s3iface.S3API
+	sessionGetter images.SessionGetter
+	storage       string
+	writer        images.Writer
 }
 
-// NewService returns an instantiated instance of a service which has the
+// New returns an instantiated instance of a service which has the
 // following dependencies:
 //
 // logger: for structured logging
@@ -39,12 +41,15 @@ type Service struct {
 // reader: for reading image records
 //
 // writer: for writing image records
-func NewService(logger *zap.Logger, storage string, reader images.Reader, writer images.Writer) (*Service, error) {
+//
+// sessionGetter: for configuring the AWS session
+func New(logger *zap.Logger, storage string, reader images.Reader, writer images.Writer, sessionGetter images.SessionGetter) (*Service, error) {
 	s := Service{
-		logger:  logger.Named(loggerName),
-		storage: storage,
-		reader:  reader,
-		writer:  writer,
+		logger:        logger.Named(loggerName),
+		sessionGetter: sessionGetter,
+		storage:       storage,
+		reader:        reader,
+		writer:        writer,
 	}
 
 	if err := s.validate(); err != nil {
@@ -94,16 +99,16 @@ func (s *Service) validate() error {
 
 // Upload attempts to upload using the given request and adds a corresponding
 // image record in the DB.
-func (s *Service) Upload(r UploadRequest) error {
+func (s *Service) Upload(r images.UploadRequest) (string, error) {
 	logger := s.logger.With(zap.String("name", r.Name))
 	logger.Info("attempting to upload")
 
 	// get session
-	sess, err := session.NewSession(aws.NewConfig().WithRegion(region))
+	sess, err := s.sessionGetter()
 	if err != nil {
 		const msg = "unable to get AWS session"
 		logger.Error(msg, zap.Error(err))
-		return fmt.Errorf(msg+": %w", err)
+		return "", fmt.Errorf(msg+": %w", err)
 	}
 
 	// upload image
@@ -120,7 +125,7 @@ func (s *Service) Upload(r UploadRequest) error {
 	if _, err := s3Uploader.Upload(&uploadInput); err != nil {
 		const msg = "unable to upload image"
 		logger.Error(msg, zap.Error(err))
-		return fmt.Errorf(msg+": %w", err)
+		return "", fmt.Errorf(msg+": %w", err)
 	}
 
 	// head object to get the content length
@@ -132,7 +137,7 @@ func (s *Service) Upload(r UploadRequest) error {
 	if err != nil {
 		const msg = "unable to head object"
 		logger.Error(msg, zap.Error(err))
-		return fmt.Errorf(msg+": %w", err)
+		return "", fmt.Errorf(msg+": %w", err)
 	}
 
 	// create image record to point to this object
@@ -149,65 +154,63 @@ func (s *Service) Upload(r UploadRequest) error {
 	if err := s.writer.Create(&image); err != nil {
 		const msg = "unable to create image record"
 		logger.Error(msg, zap.Error(err))
+		return "", fmt.Errorf(msg+": %w", err)
+	}
+
+	return imageID, nil
+}
+
+// Download attempts to download an image file from cloud storage to the
+// requested file path.
+func (s *Service) Download(r images.DownloadRequest) error {
+	logger := s.logger.With(zap.String("imageId", r.ID))
+	logger.Info("attempting to download object")
+
+	//get record  from id
+	rec, err := s.reader.Get(r.ID)
+	switch err {
+	case nil:
+	case images.ErrRecordNotFound:
+		logger.Error("record not found", zap.Error(err))
+		return err
+	default:
+		const msg = "unable to retrieve image record"
+		logger.Error(msg, zap.Error(err))
+		return fmt.Errorf(msg+": %w", err)
+	}
+
+	// get downloader
+	var s3Downloader *s3manager.Downloader
+	if s.s3 != nil {
+		s3Downloader = s3manager.NewDownloaderWithClient(s.s3)
+	} else {
+		sess, err := s.sessionGetter()
+		if err != nil {
+			const msg = "unable to get AWS session"
+			logger.Error(msg, zap.Error(err))
+			return fmt.Errorf(msg+": %w", err)
+		}
+		s3Downloader = s3manager.NewDownloader(sess)
+	}
+
+	// download
+	input := s3.GetObjectInput{
+		Bucket: &s.storage,
+		Key:    &rec.Key,
+	}
+	if _, err := s3Downloader.Download(r.Stream, &input); err != nil {
+		const msg = "unable to download file"
+		logger.Error(msg, zap.Error(err))
+		if awsErr, ok := err.(awserr.Error); ok && awsErr.Code() == s3.ErrCodeNoSuchKey {
+			return images.ErrObjectNotFound
+		}
 		return fmt.Errorf(msg+": %w", err)
 	}
 
 	return nil
 }
 
-func (s *Service) Download(r DownloadRequest) error {
-	logger := s.logger.With(zap.String("imageId", r.ID), zap.String("filePath", r.FilePath))
-	logger.Info("attempting to download object")
-	return nil
-
-	//TODO
-
-	// get record  from id
-	//rec, err := s.reader.Get()
-	//switch err {
-	//case nil:
-	//case
-	//}
-
-	//
-	//f, err := os.Open(r.FilePath)
-	//if err != nil {
-	//	const msg = "unable to open file"
-	//	logger.Error(msg, zap.Error(err))
-	//	return fmt.Errorf(msg+": %w", err)
-	//}
-	//
-	//// get session
-	//sess, err := session.NewSession(aws.NewConfig().WithRegion(region))
-	//if err != nil {
-	//	const msg = "unable to get AWS session"
-	//	logger.Error(msg, zap.Error(err))
-	//	return fmt.Errorf(msg+": %w", err)
-	//}
-	//s3Downloader := s3manager.NewDownloader(sess)
-}
-
-// DownloadRequest represents the type used to request a download on an
-// io.Reader to cloud storage.
-type DownloadRequest struct {
-	// ID of the image.
-	ID string
-
-	// FilePath to download the object into
-	FilePath string
-}
-
-// UploadRequest represents the type used to request an upload on an io.Reader
-// to cloud storage.
-type UploadRequest struct {
-	// Name of the file to upload
-	Name string
-
-	// Body of the data to upload
-	Body io.Reader
-}
-
-func uploadKey(r UploadRequest, imageID string) string {
+func uploadKey(r images.UploadRequest, imageID string) string {
 	return "images/" + imageID + "/" + r.Name
 }
 
