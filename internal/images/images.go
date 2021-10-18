@@ -51,6 +51,9 @@ type Reader interface {
 type Writer interface {
 	// Create provides the means to create image records in the db.
 	Create(record *Record) error
+
+	// Delete provides the means to delete an image record from the db.
+	Delete(id string) error
 }
 
 // SessionGetter provides the caller a way retrieve an AWS session with

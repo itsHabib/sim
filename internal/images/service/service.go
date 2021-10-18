@@ -8,7 +8,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -25,7 +24,6 @@ const (
 type Service struct {
 	logger        *zap.Logger
 	reader        images.Reader
-	s3            s3iface.S3API
 	sessionGetter images.SessionGetter
 	storage       string
 	writer        images.Writer
@@ -97,6 +95,89 @@ func (s *Service) validate() error {
 	return nil
 }
 
+// Delete will remove both the image from cloud storage and the DB record
+// that represents the image.
+func (s *Service) Delete(id string) error {
+	logger := s.logger.With(zap.String("imageId", id))
+
+	//get record  from id
+	rec, err := s.reader.Get(id)
+	switch err {
+	case nil:
+	case images.ErrRecordNotFound:
+		logger.Error("record not found", zap.Error(err))
+		return err
+	default:
+		const msg = "unable to retrieve image record"
+		logger.Error(msg, zap.Error(err))
+		return fmt.Errorf(msg+": %w", err)
+	}
+
+	// delete image object
+	if err := s.deleteObject(rec.Key, logger); err != nil {
+		const msg = "unable to delete object"
+		logger.Error(msg, zap.Error(err))
+		return fmt.Errorf(msg+": %w", err)
+	}
+
+	// remove record from db
+	err = s.writer.Delete(id)
+	switch err {
+	case nil, images.ErrRecordNotFound:
+		return nil
+	default:
+		const msg = "unable to delete record"
+		logger.Error(msg, zap.Error(err))
+		return fmt.Errorf(msg+": %w", err)
+	}
+}
+
+// Download attempts to download an image file from cloud storage to the
+// requested file path.
+func (s *Service) Download(r images.DownloadRequest) error {
+	logger := s.logger.With(zap.String("imageId", r.ID))
+	logger.Info("attempting to download object")
+
+	//get record  from id
+	rec, err := s.reader.Get(r.ID)
+	switch err {
+	case nil:
+	case images.ErrRecordNotFound:
+		logger.Error("record not found", zap.Error(err))
+		return err
+	default:
+		const msg = "unable to retrieve image record"
+		logger.Error(msg, zap.Error(err))
+		return fmt.Errorf(msg+": %w", err)
+	}
+
+	// get downloader
+	sess, err := s.sessionGetter()
+	if err != nil {
+		const msg = "unable to get AWS session"
+		logger.Error(msg, zap.Error(err))
+		return fmt.Errorf(msg+": %w", err)
+	}
+	s3Downloader := s3manager.NewDownloader(sess)
+
+	// download
+	input := s3.GetObjectInput{
+		Bucket: &s.storage,
+		Key:    &rec.Key,
+	}
+	if _, err := s3Downloader.Download(r.Stream, &input); err != nil {
+		const msg = "unable to download file"
+		logger.Error(msg, zap.Error(err))
+		if awsErr, ok := err.(awserr.Error); ok && awsErr.Code() == s3.ErrCodeNoSuchKey {
+			return images.ErrObjectNotFound
+		}
+		return fmt.Errorf(msg+": %w", err)
+	}
+	logger.Info("successfully downloaded file")
+
+	return nil
+}
+
 // Upload attempts to upload using the given request and adds a corresponding
 // image record in the DB.
 func (s *Service) Upload(r images.UploadRequest) (string, error) {
@@ -156,54 +237,31 @@ func (s *Service) Upload(r images.UploadRequest) (string, error) {
 		logger.Error(msg, zap.Error(err))
 		return "", fmt.Errorf(msg+": %w", err)
 	}
+	logger.Info("successfully uploaded file")
 
 	return imageID, nil
 }
 
-// Download attempts to download an image file from cloud storage to the
-// requested file path.
-func (s *Service) Download(r images.DownloadRequest) error {
-	logger := s.logger.With(zap.String("imageId", r.ID))
-	logger.Info("attempting to download object")
-
-	//get record  from id
-	rec, err := s.reader.Get(r.ID)
-	switch err {
-	case nil:
-	case images.ErrRecordNotFound:
-		logger.Error("record not found", zap.Error(err))
-		return err
-	default:
-		const msg = "unable to retrieve image record"
+func (s *Service) deleteObject(key string, logger *zap.Logger) error {
+	sess, err := s.sessionGetter()
+	if err != nil {
+		const msg = "unable to get AWS session"
 		logger.Error(msg, zap.Error(err))
 		return fmt.Errorf(msg+": %w", err)
 	}
+	client := s3.New(sess)
 
-	// get downloader
-	var s3Downloader *s3manager.Downloader
-	if s.s3 != nil {
-		s3Downloader = s3manager.NewDownloaderWithClient(s.s3)
-	} else {
-		sess, err := s.sessionGetter()
-		if err != nil {
-			const msg = "unable to get AWS session"
-			logger.Error(msg, zap.Error(err))
-			return fmt.Errorf(msg+": %w", err)
-		}
-		s3Downloader = s3manager.NewDownloader(sess)
-	}
-
-	// download
-	input := s3.GetObjectInput{
+	input := s3.DeleteObjectInput{
 		Bucket: &s.storage,
-		Key:    &rec.Key,
+		Key:    &key,
 	}
-	if _, err := s3Downloader.Download(r.Stream, &input); err != nil {
-		const msg = "unable to download file"
-		logger.Error(msg, zap.Error(err))
-		if awsErr, ok := err.(awserr.Error); ok && awsErr.Code() == s3.ErrCodeNoSuchKey {
-			return images.ErrObjectNotFound
+	if _, err := client.DeleteObject(&input); err != nil {
+		if awsErr, ok := err.(awserr.Error); ok && awsErr.Code() != s3.ErrCodeNoSuchKey && strings.Contains(awsErr.Code(), "NotFound") {
+			logger.Info("object not found")
+			return nil
 		}
+		const msg = "unable to delete object"
+		logger.Error(msg, zap.Error(err))
 		return fmt.Errorf(msg+": %w", err)
 	}
 

@@ -117,3 +117,26 @@ func (s *Service) Create(record *images.Record) error {
 
 	return nil
 }
+
+// Delete removes the item with id from the database.
+func (s *Service) Delete(id string) error {
+	logger := s.logger.With(zap.String("imageId", id))
+
+	input := dynamodb.DeleteItemInput{
+		TableName: &s.name,
+		Key: map[string]*dynamodb.AttributeValue{
+			"id": {
+				S: &id,
+			},
+		},
+	}
+	if _, err := s.db.DeleteItem(&input); err != nil {
+		const msg = "unable to delete item"
+		logger.Error(msg, zap.Error(err))
+		return fmt.Errorf(msg+": %w", err)
+	}
+
+	logger.Info("successfully deleted item from db")
+
+	return nil
+}

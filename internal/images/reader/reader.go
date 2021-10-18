@@ -106,6 +106,12 @@ func (s *Service) Get(id string) (*images.Record, error) {
 		logger.Error(msg, zap.Error(err))
 		return nil, fmt.Errorf(msg+": %w", err)
 	}
+	// TODO: double check if this is how it is actually done for dynamodb,
+	//  according to github issues seems so.
+	if len(res.Item) == 0 {
+		logger.Error("record not found", zap.Error(err))
+		return nil, images.ErrRecordNotFound
+	}
 
 	var rec images.Record
 	if err := dynamodbattribute.UnmarshalMap(res.Item, &rec); err != nil {

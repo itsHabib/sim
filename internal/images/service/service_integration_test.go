@@ -7,12 +7,15 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -85,28 +88,59 @@ func Test_Service(t *testing.T) {
 				assert.Equal(t, body, buffer.Bytes())
 			},
 		},
+		{
+			desc: "Delete() should remove both the object and record.",
+			do: func(svc *Service, t *testing.T) {
+				require.NoError(t, svc.Delete(id))
+			},
+			chk: func(svc *Service, t *testing.T) {
+				r := images.UploadRequest{
+					Name: "test",
+				}
+				sess := getSession(t)
+				c := s3.New(sess)
+				s3Input := s3.HeadObjectInput{
+					Bucket: aws.String("sim"),
+					Key:    aws.String(uploadKey(r, id)),
+				}
+				_, err := c.HeadObject(&s3Input)
+				if err == nil {
+					t.Fatal("expected object to be deleted")
+				}
+				if err != nil {
+					if awsErr, ok := err.(awserr.Error); !ok || (awsErr.Code() != s3.ErrCodeNoSuchKey && !strings.Contains(awsErr.Code(), "NotFound")) {
+						t.Fatalf("unexpected error while getting object: %v", awsErr)
+					}
+				}
+
+				d := dynamodb.New(sess)
+				dbInput := dynamodb.GetItemInput{
+					Key: map[string]*dynamodb.AttributeValue{
+						"id": {
+							S: &id,
+						},
+					},
+					TableName: aws.String("sim"),
+				}
+				resp, err := d.GetItem(&dbInput)
+				require.NoError(t, err)
+				require.Empty(t, resp.Item)
+			},
+		},
 	} {
 		if !t.Run(tc.desc, func(t *testing.T) {
 			svc := getService(t)
 			tc.do(svc, t)
 			tc.chk(svc, t)
 		}) {
-			return
+			t.Fatalf("test ('%s') failed", tc.desc)
 		}
 	}
 }
 
 func getService(t *testing.T) *Service {
 	nop := zap.NewNop()
-	cfg := aws.
-		NewConfig().
-		WithEndpoint(localstack).
-		WithRegion(region).
-		WithS3ForcePathStyle(true).
-		WithCredentials(credentials.NewStaticCredentials("images", "secret", ""))
-	sess, err := session.NewSession(cfg)
-	require.NoError(t, err)
-
+	sess := getSession(t)
 	client := dynamodb.New(sess)
 
 	r, err := reader.NewService(nop, client, tableName)
@@ -115,8 +149,24 @@ func getService(t *testing.T) *Service {
 	w, err := writer.NewService(nop, client, tableName)
 	require.NoError(t, err)
 
-	svc, err := New(zap.NewNop(), imageStorage, r, w, images.WithSessionOptions(cfg))
+	svc, err := New(zap.NewNop(), imageStorage, r, w, images.WithSessionOptions(getCfg()))
 	require.NoError(t, err)
 
 	return svc
+}
+
+func getCfg() *aws.Config {
+	return aws.
+		NewConfig().
+		WithEndpoint(localstack).
+		WithRegion(region).
+		WithS3ForcePathStyle(true).
+		WithCredentials(credentials.NewStaticCredentials("images", "secret", ""))
+}
+
+func getSession(t *testing.T) *session.Session {
+	sess, err := session.NewSession(getCfg())
+	require.NoError(t, err)
+
+	return sess
 }
