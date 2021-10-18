@@ -7,12 +7,14 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/itsHabib/sim/internal/images"
+	internalS3 "github.com/itsHabib/sim/internal/s3"
 )
 
 const (
@@ -24,6 +26,7 @@ const (
 type Service struct {
 	logger        *zap.Logger
 	reader        images.Reader
+	sdk           *sdk
 	sessionGetter images.SessionGetter
 	storage       string
 	writer        images.Writer
@@ -44,6 +47,7 @@ type Service struct {
 func New(logger *zap.Logger, storage string, reader images.Reader, writer images.Writer, sessionGetter images.SessionGetter) (*Service, error) {
 	s := Service{
 		logger:        logger.Named(loggerName),
+		sdk:           new(sdk),
 		sessionGetter: sessionGetter,
 		storage:       storage,
 		reader:        reader,
@@ -158,14 +162,14 @@ func (s *Service) Download(r images.DownloadRequest) error {
 		logger.Error(msg, zap.Error(err))
 		return fmt.Errorf(msg+": %w", err)
 	}
-	s3Downloader := s3manager.NewDownloader(sess)
+	s.sdk.init(withSDKDownloader(sess))
 
 	// download
 	input := s3.GetObjectInput{
 		Bucket: &s.storage,
 		Key:    &rec.Key,
 	}
-	if _, err := s3Downloader.Download(r.Stream, &input); err != nil {
+	if _, err := s.sdk.downloader.Download(r.Stream, &input); err != nil {
 		const msg = "unable to download file"
 		logger.Error(msg, zap.Error(err))
 		if awsErr, ok := err.(awserr.Error); ok && awsErr.Code() == s3.ErrCodeNoSuchKey {
@@ -191,11 +195,10 @@ func (s *Service) Upload(r images.UploadRequest) (string, error) {
 		logger.Error(msg, zap.Error(err))
 		return "", fmt.Errorf(msg+": %w", err)
 	}
+	s.sdk.init(withSDKClient(sess), withSDKUploader(sess))
 
 	// upload image
 	imageID := uuid.New().String()
-	s3Uploader := s3manager.NewUploader(sess)
-	s3Client := s3.New(sess)
 	key := uploadKey(r, imageID)
 	uploadInput := s3manager.UploadInput{
 		ACL:    aws.String("private"),
@@ -203,7 +206,7 @@ func (s *Service) Upload(r images.UploadRequest) (string, error) {
 		Bucket: &s.storage,
 		Key:    &key,
 	}
-	if _, err := s3Uploader.Upload(&uploadInput); err != nil {
+	if _, err := s.sdk.uploader.Upload(&uploadInput); err != nil {
 		const msg = "unable to upload image"
 		logger.Error(msg, zap.Error(err))
 		return "", fmt.Errorf(msg+": %w", err)
@@ -214,7 +217,7 @@ func (s *Service) Upload(r images.UploadRequest) (string, error) {
 		Bucket: &s.storage,
 		Key:    &key,
 	}
-	resp, err := s3Client.HeadObject(&headInput)
+	resp, err := s.sdk.client.HeadObject(&headInput)
 	if err != nil {
 		const msg = "unable to head object"
 		logger.Error(msg, zap.Error(err))
@@ -249,13 +252,13 @@ func (s *Service) deleteObject(key string, logger *zap.Logger) error {
 		logger.Error(msg, zap.Error(err))
 		return fmt.Errorf(msg+": %w", err)
 	}
-	client := s3.New(sess)
+	s.sdk.init(withSDKClient(sess))
 
 	input := s3.DeleteObjectInput{
 		Bucket: &s.storage,
 		Key:    &key,
 	}
-	if _, err := client.DeleteObject(&input); err != nil {
+	if _, err := s.sdk.client.DeleteObject(&input); err != nil {
 		if awsErr, ok := err.(awserr.Error); ok && awsErr.Code() != s3.ErrCodeNoSuchKey && strings.Contains(awsErr.Code(), "NotFound") {
 			logger.Info("object not found")
 			return nil
@@ -266,6 +269,44 @@ func (s *Service) deleteObject(key string, logger *zap.Logger) error {
 	}
 
 	return nil
+}
+
+type sdk struct {
+	client     internalS3.Client
+	downloader internalS3.Downloader
+	uploader   internalS3.Uploader
+}
+
+func (s *sdk) init(opts ...sdkOpts) {
+	for i := range opts {
+		opts[i](s)
+	}
+}
+
+type sdkOpts func(s *sdk)
+
+func withSDKClient(sess *session.Session) sdkOpts {
+	return func(s *sdk) {
+		if s.client == nil {
+			s.client = s3.New(sess)
+		}
+	}
+}
+
+func withSDKDownloader(sess *session.Session) sdkOpts {
+	return func(s *sdk) {
+		if s.downloader == nil {
+			s.downloader = s3manager.NewDownloader(sess)
+		}
+	}
+}
+
+func withSDKUploader(sess *session.Session) sdkOpts {
+	return func(s *sdk) {
+		if s.uploader == nil {
+			s.uploader = s3manager.NewUploader(sess)
+		}
+	}
 }
 
 func uploadKey(r images.UploadRequest, imageID string) string {
