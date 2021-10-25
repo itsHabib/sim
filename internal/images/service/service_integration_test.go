@@ -116,7 +116,14 @@ func Test_Service(t *testing.T) {
 				require.Nil(t, err)
 				require.NotEmpty(t, id)
 			},
-			chk: func(svc *Service, t *testing.T) {},
+			chk: func(svc *Service, t *testing.T) {
+				rec, err := svc.reader.Get(id)
+				require.NoError(t, err)
+				assert.Equal(t, id, rec.ID)
+				assert.Equal(t, "test", rec.Name)
+				assert.Equal(t, imageStorage, rec.Storage)
+				assert.NotEmpty(t, rec.Key)
+			},
 		},
 		{
 			desc: "Download() should successfully download to the writer stream",
