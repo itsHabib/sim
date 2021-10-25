@@ -14,8 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/couchbase/gocb/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -27,26 +27,69 @@ import (
 
 var (
 	localstack   string
-	tableName    string
 	imageStorage string
+	cbEndpoint   string
+	cbUsername   string
+	cbPassword   string
+	cbBucket     string
 )
 
 func TestMain(m *testing.M) {
-	localstack = os.Getenv("LOCALSTACK_URL")
-	if localstack == "" {
-		fmt.Printf("LOCALSTACK_URL env var must be set\n")
-		os.Exit(1)
+	var missingDeps []string
+	for _, tc := range []struct {
+		env string
+		set func() bool
+	}{
+		{
+			env: "LOCALSTACK_URL",
+			set: func() bool {
+				localstack = os.Getenv("LOCALSTACK_URL")
+				return localstack != ""
+			},
+		},
+		{
+			env: "COUCHBASE_USERNAME",
+			set: func() bool {
+				cbUsername = os.Getenv("COUCHBASE_USERNAME")
+				return cbUsername != ""
+			},
+		},
+		{
+			env: "COUCHBASE_PASSWORD",
+			set: func() bool {
+				cbPassword = os.Getenv("COUCHBASE_PASSWORD")
+				return cbPassword != ""
+			},
+		},
+		{
+			env: "COUCHBASE_BUCKET",
+			set: func() bool {
+				cbBucket = os.Getenv("COUCHBASE_BUCKET")
+				return cbBucket != ""
+			},
+		},
+		{
+			env: "COUCHBASE_ENDPOINT",
+			set: func() bool {
+				cbEndpoint = os.Getenv("COUCHBASE_ENDPOINT")
+				return cbEndpoint != ""
+			},
+		},
+		{
+			env: "IMAGE_STORAGE",
+			set: func() bool {
+				imageStorage = os.Getenv("IMAGE_STORAGE")
+				return imageStorage != ""
+			},
+		},
+	} {
+		if !tc.set() {
+			missingDeps = append(missingDeps, tc.env)
+		}
 	}
 
-	tableName = os.Getenv("TABLE_NAME")
-	if tableName == "" {
-		fmt.Printf("TABLE_NAME env var must be set\n")
-		os.Exit(1)
-	}
-
-	imageStorage = os.Getenv("IMAGE_STORAGE")
-	if imageStorage == "" {
-		fmt.Printf("IMAGE_STORAGE env var must be set\n")
+	if len(missingDeps) > 0 {
+		fmt.Printf("missing (%d) dependencies: %s\n", len(missingDeps), strings.Join(missingDeps, ", "))
 		os.Exit(1)
 	}
 
@@ -113,18 +156,8 @@ func Test_Service(t *testing.T) {
 					}
 				}
 
-				d := dynamodb.New(sess)
-				dbInput := dynamodb.GetItemInput{
-					Key: map[string]*dynamodb.AttributeValue{
-						"id": {
-							S: &id,
-						},
-					},
-					TableName: aws.String("sim"),
-				}
-				resp, err := d.GetItem(&dbInput)
-				require.NoError(t, err)
-				require.Empty(t, resp.Item)
+				_, err = svc.reader.Get(id)
+				assert.EqualError(t, err, images.ErrRecordNotFound.Error())
 			},
 		},
 	} {
@@ -140,13 +173,14 @@ func Test_Service(t *testing.T) {
 
 func getService(t *testing.T) *Service {
 	nop := zap.NewNop()
-	sess := getSession(t)
-	client := dynamodb.New(sess)
 
-	r, err := reader.NewService(nop, client, tableName)
+	cb, err := getCluster()
 	require.NoError(t, err)
 
-	w, err := writer.NewService(nop, client, tableName)
+	r, err := reader.NewService(nop, cb, cbBucket)
+	require.NoError(t, err)
+
+	w, err := writer.NewService(nop, cb, cbBucket)
 	require.NoError(t, err)
 
 	svc, err := New(zap.NewNop(), imageStorage, r, w, images.WithSessionOptions(getCfg()))
@@ -162,6 +196,16 @@ func getCfg() *aws.Config {
 		WithRegion(region).
 		WithS3ForcePathStyle(true).
 		WithCredentials(credentials.NewStaticCredentials("images", "secret", ""))
+}
+
+func getCluster() (*gocb.Cluster, error) {
+	return gocb.Connect(
+		cbEndpoint,
+		gocb.ClusterOptions{
+			Username: cbUsername,
+			Password: cbPassword,
+		},
+	)
 }
 
 func getSession(t *testing.T) *session.Session {

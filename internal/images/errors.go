@@ -1,7 +1,7 @@
 package images
 
 const (
-	ErrRecordNotFound Error = "no image record found"
+	ErrRecordNotFound Error = "no image record(s) found"
 	ErrObjectNotFound Error = "no object found in storage"
 )
 

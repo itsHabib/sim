@@ -11,6 +11,14 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 )
 
+const (
+	// Scope is the couchbase scope in which the images records are stored
+	Scope = "default"
+
+	// Collection is the couchbase collection for the image records
+	Collection = "images"
+)
+
 // Record represents the image record stored in the db that links to an actual
 // image in cloud storage.
 type Record struct {

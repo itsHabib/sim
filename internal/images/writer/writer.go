@@ -4,11 +4,9 @@ package writer
 import (
 	"fmt"
 	"strings"
+	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
-	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbiface"
+	"github.com/couchbase/gocb/v2"
 	"go.uber.org/zap"
 
 	"github.com/itsHabib/sim/internal/images"
@@ -16,14 +14,15 @@ import (
 
 const (
 	loggerName = "images.writer"
+	dbTimeout  = time.Second * 3
 )
 
 // Service provides the implementation to write image records to a dynamodb
 // table.
 type Service struct {
-	db     dynamodbiface.DynamoDBAPI
-	logger *zap.Logger
-	name   string
+	collection *gocb.Collection
+	logger     *zap.Logger
+	name       string
 }
 
 // NewService returns an instantiated instance of a service which has the
@@ -31,21 +30,26 @@ type Service struct {
 //
 // logger: for structured logging
 //
-// db: for interacting with the dynamodb table
+// cb: couchbase cluster connection
 //
-// name: the dynamodb table name
-func NewService(logger *zap.Logger, db dynamodbiface.DynamoDBAPI, name string) (*Service, error) {
+// name: the couchbase bucket name
+func NewService(logger *zap.Logger, cb *gocb.Cluster, name string) (*Service, error) {
 	s := Service{
-		db:     db,
 		logger: logger.Named(loggerName),
 		name:   name,
+	}
+
+	if err := s.setCollection(cb, name); err != nil {
+		const msg = "unable to set collection"
+		s.logger.Error(msg, zap.Error(err))
+		return nil, fmt.Errorf(msg+": %w", err)
 	}
 
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
 
-	s.logger.Info("successfully initialized image writer")
+	s.logger.Debug("successfully initialized image writer")
 
 	return &s, nil
 }
@@ -58,8 +62,8 @@ func (s *Service) validate() error {
 		chk func() bool
 	}{
 		{
-			dep: "db",
-			chk: func() bool { return s.db != nil },
+			dep: "collection",
+			chk: func() bool { return s.collection != nil },
 		},
 		{
 			dep: "logger",
@@ -94,26 +98,18 @@ func (s *Service) Create(record *images.Record) error {
 		zap.String("storage", record.Storage),
 	)
 
-	av, err := dynamodbattribute.MarshalMap(record)
-	if err != nil {
-		const msg = "unable to marshal image record"
+	// attempt to insert item
+	options := gocb.InsertOptions{
+		DurabilityLevel: gocb.DurabilityLevelNone,
+		Timeout:         dbTimeout,
+	}
+	if _, err := s.collection.Insert(record.ID, record, &options); err != nil {
+		const msg = "unable to insert image record"
 		logger.Error(msg, zap.Error(err))
 		return fmt.Errorf(msg+": %w", err)
 	}
 
-	input := dynamodb.PutItemInput{
-		TableName: aws.String(s.name),
-		Item:      av,
-	}
-
-	// attempt to put item
-	if _, err := s.db.PutItem(&input); err != nil {
-		const msg = "unable to put item in db"
-		logger.Error(msg, zap.Error(err))
-		return fmt.Errorf(msg+": %w", err)
-	}
-
-	logger.Info("successfully put item in db")
+	logger.Info("successfully inserted item in db")
 
 	return nil
 }
@@ -122,21 +118,24 @@ func (s *Service) Create(record *images.Record) error {
 func (s *Service) Delete(id string) error {
 	logger := s.logger.With(zap.String("imageId", id))
 
-	input := dynamodb.DeleteItemInput{
-		TableName: &s.name,
-		Key: map[string]*dynamodb.AttributeValue{
-			"id": {
-				S: &id,
-			},
-		},
-	}
-	if _, err := s.db.DeleteItem(&input); err != nil {
-		const msg = "unable to delete item"
+	if _, err := s.collection.Remove(id, &gocb.RemoveOptions{Timeout: dbTimeout}); err != nil {
+		const msg = "unable to delete image record"
 		logger.Error(msg, zap.Error(err))
 		return fmt.Errorf(msg+": %w", err)
 	}
 
 	logger.Info("successfully deleted item from db")
+
+	return nil
+}
+
+func (s *Service) setCollection(c *gocb.Cluster, bucket string) error {
+	b := c.Bucket(bucket)
+	if err := b.WaitUntilReady(time.Second*3, nil); err != nil {
+		return fmt.Errorf("unable to connect to bucket: %q", err)
+	}
+
+	s.collection = b.Scope(images.Scope).Collection(images.Collection)
 
 	return nil
 }
