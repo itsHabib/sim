@@ -124,10 +124,10 @@ func (r *Runner) runDownloadCommand(cmd *cobra.Command, args []string) error {
 	logger := r.logger.With(zap.String("filePath", r.command.filePath), zap.String("imageId", r.command.imageID))
 
 	if _, err := r.svc.Get(r.command.imageID); err != nil {
-        const msg = "unable to get image record"
-        logger.Error(msg, zap.Error(err))
-        return fmt.Errorf(msg+": %w", err)
-    }
+		const msg = "unable to get image record"
+		logger.Error(msg, zap.Error(err))
+		return fmt.Errorf(msg+": %w", err)
+	}
 
 	f, err := os.Create(r.command.filePath)
 	if err != nil {
@@ -192,10 +192,10 @@ func (r *Runner) runUploadCommand(cmd *cobra.Command, args []string) error {
 	switch err {
 	case nil:
 	case image.ErrFormat:
-        const msg = "unsupported image format"
-        logger.Error(msg, zap.Error(err))
+		const msg = "unsupported image format"
+		logger.Error(msg, zap.Error(err))
 
-        return image.ErrFormat
+		return image.ErrFormat
 	default:
 		const msg = "unsupported image format"
 		logger.Error(msg, zap.Error(err))
