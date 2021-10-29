@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -64,7 +65,7 @@ func main() {
 	runner := runner.NewRunner(logger, svc)
 
 	if err := runner.Run(); err != nil {
-		log.Fatalf("run err: %s", err)
+		os.Exit(1)
 	}
 }
 

@@ -3,6 +3,10 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -119,6 +123,12 @@ func (r *Runner) runDeleteCommand(cmd *cobra.Command, args []string) error {
 func (r *Runner) runDownloadCommand(cmd *cobra.Command, args []string) error {
 	logger := r.logger.With(zap.String("filePath", r.command.filePath), zap.String("imageId", r.command.imageID))
 
+	if _, err := r.svc.Get(r.command.imageID); err != nil {
+        const msg = "unable to get image record"
+        logger.Error(msg, zap.Error(err))
+        return fmt.Errorf(msg+": %w", err)
+    }
+
 	f, err := os.Create(r.command.filePath)
 	if err != nil {
 		const msg = "unable to create file"
@@ -127,7 +137,7 @@ func (r *Runner) runDownloadCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	req := images.DownloadRequest{
-		ID:     r.command.filePath,
+		ID:     r.command.imageID,
 		Stream: f,
 	}
 
@@ -178,6 +188,26 @@ func (r *Runner) runUploadCommand(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf(msg+": %w", err)
 	}
 
+	_, _, err = image.Decode(f)
+	switch err {
+	case nil:
+	case image.ErrFormat:
+        const msg = "unsupported image format"
+        logger.Error(msg, zap.Error(err))
+
+        return image.ErrFormat
+	default:
+		const msg = "unsupported image format"
+		logger.Error(msg, zap.Error(err))
+		return fmt.Errorf(msg+": %w", err)
+	}
+
+	// we need to seek since image.Decode processes the file
+	if _, err := f.Seek(0, 0); err != nil {
+		const msg = "unable to seek file"
+		logger.Error(msg, zap.Error(err))
+		return fmt.Errorf(msg+": %w", err)
+	}
 	request := images.UploadRequest{
 		Name: r.command.imageName,
 		Body: f,
@@ -189,6 +219,7 @@ func (r *Runner) runUploadCommand(cmd *cobra.Command, args []string) error {
 		logger.Error(msg, zap.Error(err))
 		return fmt.Errorf(msg+": %w", err)
 	}
+	f.Close()
 
 	logger.Debug("successfully uploaded image")
 	fmt.Printf("Image uploaded successfully with id(%s)\n", imageID)
@@ -205,7 +236,7 @@ type command struct {
 
 func rootCmd() *cobra.Command {
 	return &cobra.Command{
-		Short: "A simple image manager",
-		Long:  "A CLI for managing image files in cloud storage.",
+		Short: "A simple image manager for jpegs, pngs, and gifs.",
+		Long:  "A CLI for managing image files in cloud storage. Supported file formats are jpegs, pngs, and gifs.",
 	}
 }
