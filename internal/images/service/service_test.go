@@ -383,7 +383,7 @@ func Test_Service_Upload(t *testing.T) {
 						require.NotNil(t, i)
 						assert.NotEmpty(t, i.CreatedAt)
 						assert.Equal(t, "etag", i.ETag)
-						assert.Equal(t, int64(1), i.Size)
+						assert.Equal(t, int64(1024), i.SizeInBytes)
 						assert.Equal(t, "test", i.Name)
 						assert.Equal(t, storage, i.Storage)
 
@@ -428,4 +428,12 @@ func Test_Service_Upload(t *testing.T) {
 
 func mockSessionGetter() (*session.Session, error) {
 	return new(session.Session), nil
+}
+
+func unwrapStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+
+	return *s
 }

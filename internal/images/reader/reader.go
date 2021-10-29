@@ -131,7 +131,7 @@ func (s *Service) Get(id string) (*images.Record, error) {
 func (s *Service) List() ([]images.Record, error) {
 
 	fqn := "`" + s.name + "`" + "." + images.Scope + "." + images.Collection
-	query := "SELECT * FROM " + fqn
+	query := "SELECT x.* FROM " + fqn + " x"
 
 	options := gocb.QueryOptions{
 		Timeout: dbTimeout,
@@ -151,6 +151,7 @@ func (s *Service) List() ([]images.Record, error) {
 			s.logger.Error(msg, zap.Error(err))
 			return nil, fmt.Errorf(msg+": %w", err)
 		}
+		s.logger.Info("adding image to list", zap.Any("record", rec))
 		list = append(list, rec)
 	}
 

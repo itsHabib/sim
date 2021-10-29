@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -182,6 +183,31 @@ func (s *Service) Download(r images.DownloadRequest) error {
 	return nil
 }
 
+// List returns a list all the image records stored in the database.
+func (s *Service) List() ([]images.Image, error) {
+	records, err := s.reader.List()
+	switch err {
+	case nil:
+	case images.ErrRecordNotFound:
+		return nil, err
+	default:
+		const msg = "unable to list records"
+		s.logger.Error(msg, zap.Error(err))
+		return nil, fmt.Errorf(msg+": %w", err)
+	}
+
+	resp := make([]images.Image, len(records))
+	for i := range records {
+		resp[i] = images.Image{
+			ID:          records[i].ID,
+			Name:        records[i].Name,
+			SizeInBytes: records[i].SizeInBytes,
+		}
+	}
+
+	return resp, nil
+}
+
 // Upload attempts to upload using the given request and adds a corresponding
 // image record in the DB.
 func (s *Service) Upload(r images.UploadRequest) (string, error) {
@@ -224,16 +250,22 @@ func (s *Service) Upload(r images.UploadRequest) (string, error) {
 		return "", fmt.Errorf(msg+": %w", err)
 	}
 
+	if resp.ETag == nil || resp.ContentLength == nil {
+		const msg = "etag and/or content length is nil, unable to save metadata"
+		logger.Error(msg)
+		return "", errors.New(msg)
+	}
+
 	// create image record to point to this object
 	now := time.Now().UTC()
 	image := images.Record{
-		ID:        imageID,
-		CreatedAt: &now,
-		ETag:      unwrapStr(resp.ETag),
-		Key:       key,
-		Name:      r.Name,
-		Size:      bytesToKB(unwrapInt(resp.ContentLength)),
-		Storage:   s.storage,
+		ID:          imageID,
+		CreatedAt:   &now,
+		ETag:        *resp.ETag,
+		Key:         key,
+		Name:        r.Name,
+		SizeInBytes: *resp.ContentLength,
+		Storage:     s.storage,
 	}
 	if err := s.writer.Create(&image); err != nil {
 		const msg = "unable to create image record"
@@ -311,20 +343,6 @@ func withSDKUploader(sess *session.Session) sdkOpts {
 
 func uploadKey(r images.UploadRequest, imageID string) string {
 	return "images/" + imageID + "/" + r.Name
-}
-
-func unwrapInt(i *int64) int64 {
-	if i == nil {
-		return 0
-	}
-	return *i
-}
-
-func unwrapStr(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 func bytesToKB(b int64) int64 {

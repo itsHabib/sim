@@ -37,8 +37,8 @@ type Record struct {
 	// Name of the object given during an upload. This must be unique.
 	Name string `json:"name"`
 
-	// Size is the size of the object in KB
-	Size int64 `json:"size"`
+	// Size is the size of the object in bytes
+	SizeInBytes int64 `json:"SizeInBytes"`
 
 	// Storage is the cloud storage that holds the underlying images
 	// i.e. an AWS bucket
@@ -94,4 +94,17 @@ type UploadRequest struct {
 
 	// Body of the data to upload
 	Body io.Reader
+}
+
+// Image represents the public facing type used to display the key
+// information about an image record.
+type Image struct {
+	// ID of the record
+	ID string `json:"id"`
+
+	// Name of the object given during an upload. This must be unique.
+	Name string `json:"name"`
+
+	// Size is the size of the object in bytes
+	SizeInBytes int64 `json:"sizeInBytes"`
 }
