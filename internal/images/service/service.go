@@ -183,6 +183,23 @@ func (s *Service) Download(r images.DownloadRequest) error {
 	return nil
 }
 
+// Get retrieves the image record by id
+func (s *Service) Get(id string) (*images.Record, error) {
+	logger := s.logger.With(zap.String("imageId", id))
+	rec, err := s.reader.Get(id)
+	switch err {
+	case nil:
+		return rec, nil
+	case images.ErrRecordNotFound:
+		logger.Error("record not found", zap.Error(err))
+		return nil, images.ErrRecordNotFound
+	default:
+		const msg = "unable to retrieve image record"
+		logger.Error(msg, zap.Error(err))
+		return nil, fmt.Errorf(msg+": %w", err)
+	}
+}
+
 // List returns a list all the image records stored in the database.
 func (s *Service) List() ([]images.Image, error) {
 	records, err := s.reader.List()

@@ -1,4 +1,4 @@
-package cmd
+package runner
 
 import (
 	"encoding/json"
@@ -12,41 +12,39 @@ import (
 	"github.com/itsHabib/sim/internal/images/service"
 )
 
+// Runner is responsible for running the cobra commands that interact
+// with the images service.
 type Runner struct {
-	logger           *zap.Logger
-	root             *cobra.Command
-	svc              *service.Service
-	filePath         string
-	fileName         string
-	imageID          string
-	downloadFilePath string
+	logger  *zap.Logger
+	command *command
+	svc     *service.Service
 }
 
 func NewRunner(logger *zap.Logger, svc *service.Service) *Runner {
 	r := Runner{
-		logger: logger,
-		svc:    svc,
+		logger:  logger,
+		svc:     svc,
+		command: new(command),
 	}
 	r.registerCommands()
 
 	return &r
 }
 
+// Run executes the underlying root cobra command.
 func (r *Runner) Run() error {
-	return r.root.Execute()
+	return r.command.root.Execute()
 }
 
 func (r *Runner) registerCommands() {
-	root := rootCmd()
+	r.command.root = rootCmd()
 
-	root.AddCommand(
+	r.command.root.AddCommand(
 		r.deleteCommand(),
 		r.downloadCommand(),
 		r.listCommand(),
 		r.uploadCommand(),
 	)
-
-	r.root = root
 }
 
 func (r *Runner) deleteCommand() *cobra.Command {
@@ -57,7 +55,7 @@ func (r *Runner) deleteCommand() *cobra.Command {
 		RunE:  r.runDeleteCommand,
 	}
 
-	c.Flags().StringVarP(&r.imageID, "imageId", "", "", "Id of the image to download (required)")
+	c.Flags().StringVarP(&r.command.imageID, "imageId", "", "", "Id of the image to download (required)")
 	c.MarkFlagRequired("imageId")
 
 	return &c
@@ -71,8 +69,8 @@ func (r *Runner) downloadCommand() *cobra.Command {
 		RunE:  r.runDownloadCommand,
 	}
 
-	c.Flags().StringVarP(&r.downloadFilePath, "file", "f", "", "Path to download the file into (required)")
-	c.Flags().StringVarP(&r.imageID, "imageId", "", "", "Id of the image to download (required)")
+	c.Flags().StringVarP(&r.command.filePath, "file", "f", "", "Path to download the file into (required)")
+	c.Flags().StringVarP(&r.command.imageID, "imageId", "", "", "Id of the image to download (required)")
 	c.MarkFlagRequired("imageId")
 	c.MarkFlagRequired("file")
 
@@ -95,8 +93,8 @@ func (r *Runner) uploadCommand() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  r.runUploadCommand,
 	}
-	c.Flags().StringVarP(&r.filePath, "file", "f", "", "Path to the image file (required)")
-	c.Flags().StringVarP(&r.fileName, "name", "n", "", "Name for the image (required)")
+	c.Flags().StringVarP(&r.command.filePath, "file", "f", "", "Path to the image file (required)")
+	c.Flags().StringVarP(&r.command.imageName, "name", "n", "", "Name for the image (required)")
 	c.MarkFlagRequired("file")
 	c.MarkFlagRequired("name")
 
@@ -104,19 +102,24 @@ func (r *Runner) uploadCommand() *cobra.Command {
 }
 
 func (r *Runner) runDeleteCommand(cmd *cobra.Command, args []string) error {
-	if err := r.svc.Delete(r.imageID); err != nil {
-		return err
+	logger := r.logger.With(zap.String("imageId", r.command.imageID))
+
+	if err := r.svc.Delete(r.command.imageID); err != nil {
+		const msg = "unable to delete image"
+		logger.Error(msg, zap.Error(err))
+		return fmt.Errorf(msg+": %w", err)
 	}
 
-	fmt.Printf("Image (%s) successfully deleted\n", r.imageID)
-	r.logger.Info("Image deleted", zap.String("imageId", r.imageID))
+	logger.Debug("image deleted", zap.String("imageId", r.command.imageID))
+	fmt.Printf("Image (%s) successfully deleted\n", r.command.imageID)
+
 	return nil
 }
 
 func (r *Runner) runDownloadCommand(cmd *cobra.Command, args []string) error {
-	logger := r.logger.With(zap.String("filePath", r.downloadFilePath), zap.String("imageId", r.imageID))
+	logger := r.logger.With(zap.String("filePath", r.command.filePath), zap.String("imageId", r.command.imageID))
 
-	f, err := os.Create(r.downloadFilePath)
+	f, err := os.Create(r.command.filePath)
 	if err != nil {
 		const msg = "unable to create file"
 		logger.Error(msg, zap.Error(err))
@@ -124,7 +127,7 @@ func (r *Runner) runDownloadCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	req := images.DownloadRequest{
-		ID:     r.imageID,
+		ID:     r.command.filePath,
 		Stream: f,
 	}
 
@@ -134,7 +137,8 @@ func (r *Runner) runDownloadCommand(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf(msg+": %w", err)
 	}
 
-	fmt.Printf("successfully downloaded file to: (%s)\n", r.downloadFilePath)
+	logger.Debug("successfully downloaded image")
+	fmt.Printf("successfully downloaded file to: (%s)\n", r.command.filePath)
 
 	return nil
 }
@@ -165,9 +169,9 @@ func (r *Runner) runListCommand(cmd *cobra.Command, args []string) error {
 }
 
 func (r *Runner) runUploadCommand(cmd *cobra.Command, args []string) error {
-	logger := r.logger.With(zap.String("filePath", r.filePath), zap.String("fileName", r.fileName))
+	logger := r.logger.With(zap.String("filePath", r.command.filePath), zap.String("imageName", r.command.imageName))
 
-	f, err := os.Open(r.filePath)
+	f, err := os.Open(r.command.filePath)
 	if err != nil {
 		const msg = "failed to open file"
 		logger.Error(msg, zap.Error(err))
@@ -175,9 +179,10 @@ func (r *Runner) runUploadCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	request := images.UploadRequest{
-		Name: r.fileName,
+		Name: r.command.imageName,
 		Body: f,
 	}
+
 	imageID, err := r.svc.Upload(request)
 	if err != nil {
 		const msg = "failed to upload file"
@@ -185,9 +190,17 @@ func (r *Runner) runUploadCommand(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf(msg+": %w", err)
 	}
 
+	logger.Debug("successfully uploaded image")
 	fmt.Printf("Image uploaded successfully with id(%s)\n", imageID)
 
 	return nil
+}
+
+type command struct {
+	root      *cobra.Command
+	filePath  string
+	imageName string
+	imageID   string
 }
 
 func rootCmd() *cobra.Command {

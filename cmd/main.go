@@ -9,11 +9,11 @@ import (
 	"github.com/couchbase/gocb/v2"
 	"go.uber.org/zap"
 
-	"github.com/itsHabib/sim/cmd"
 	"github.com/itsHabib/sim/internal/images"
 	"github.com/itsHabib/sim/internal/images/reader"
 	"github.com/itsHabib/sim/internal/images/service"
 	"github.com/itsHabib/sim/internal/images/writer"
+	"github.com/itsHabib/sim/internal/runner"
 )
 
 type config struct {
@@ -61,7 +61,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("unable to get service: %s", err)
 	}
-	runner := cmd.NewRunner(logger, svc)
+	runner := runner.NewRunner(logger, svc)
 
 	if err := runner.Run(); err != nil {
 		log.Fatalf("run err: %s", err)
